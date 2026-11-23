@@ -1,0 +1,847 @@
+/* HELPER FUNCTIONS */
+
+const el = id => document.getElementById(id);
+const val = id => el(id).value.trim();
+const now = () => new Date().toLocaleString();
+
+const escapeHTML = value => String(value ?? "").replace(
+    /[&<>"']/g,
+    c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"})[c]
+);
+
+const safe = escapeHTML;
+
+let toastTimer;
+
+function toast(message) {
+    el("toast").textContent = message;
+    el("toast").classList.add("show");
+
+    clearTimeout(toastTimer);
+
+    toastTimer = setTimeout(() => {
+        el("toast").classList.remove("show");
+    }, 3500);
+}
+
+/* LOCAL DATABASE */
+
+const DB_KEY = "aquacare_database_v3";
+
+function createID(prefix) {
+    return prefix + "-" + Date.now().toString(36).toUpperCase()
+        + Math.random().toString(36).slice(2, 6).toUpperCase();
+}
+
+function initialDatabase() {
+    return {
+        Residents: [],
+        Areas: [],
+        Maintenance_Teams: [
+            {
+                team_id: "TEAM-101",
+                team_name: "Pipeline Repair Team",
+                team_leader: "Demo Leader 1",
+                phone: "0000000000",
+                availability: "Available"
+            },
+            {
+                team_id: "TEAM-102",
+                team_name: "Water Supply Team",
+                team_leader: "Demo Leader 2",
+                phone: "0000000000",
+                availability: "Available"
+            }
+        ],
+        Admin: [
+            {
+                admin_id: "ADMIN-01",
+                username: "Administrator",
+                email: "admin@aquacare.com"
+            }
+        ],
+        Complaints: [],
+        Complaint_Reports: [],
+        Assignments: [],
+        Complaint_Status_History: [],
+        Contact_Messages: []
+    };
+}
+
+function getDB() {
+    return JSON.parse(localStorage.getItem(DB_KEY))
+        || initialDatabase();
+}
+
+function saveDB(db) {
+    try {
+        localStorage.setItem(DB_KEY, JSON.stringify(db));
+        return true;
+    } catch(error) {
+        toast("Storage unavailable or full. Unable to save data.");
+        return false;
+    }
+}
+
+function isAdmin() {
+    return sessionStorage.getItem("aquacareAdmin") === "yes";
+}
+
+function requireAdmin() {
+    if(!isAdmin()) {
+        location.hash = "login";
+        return false;
+    }
+    return true;
+}
+
+/* PAGE NAVIGATION */
+
+function navigate() {
+    let page = location.hash.slice(1) || "home";
+
+    const pages = ["home", "report", "track", "about", "contact", "login", "admin"];
+
+    if(!pages.includes(page)) page = "home";
+
+    if(page === "admin" && !isAdmin()) page = "login";
+    if(page === "login" && isAdmin()) page = "admin";
+
+    document.querySelectorAll(".page").forEach(p => {
+        p.classList.toggle("active", p.id === page);
+    });
+
+    if(page === "admin") renderAdmin();
+
+    window.scrollTo(0, 0);
+}
+
+window.addEventListener("hashchange", navigate);
+
+/* WATER BUBBLES */
+
+const hero = document.querySelector(".hero");
+
+for(let i = 0; i < 25; i++) {
+    const bubble = document.createElement("span");
+    const size = Math.random() * 45 + 8;
+
+    bubble.className = "bubble";
+    bubble.style.width = size + "px";
+    bubble.style.height = size + "px";
+    bubble.style.left = Math.random() * 100 + "%";
+    bubble.style.animationDuration = Math.random() * 8 + 5 + "s";
+    bubble.style.animationDelay = Math.random() * 10 + "s";
+
+    hero.appendChild(bubble);
+}
+
+/* SCROLL REVEAL */
+
+const cards = document.querySelectorAll(".reveal");
+
+if("IntersectionObserver" in window) {
+    const observer = new IntersectionObserver(entries => {
+        entries.forEach(entry => {
+            if(entry.isIntersecting) {
+                entry.target.classList.add("visible");
+                observer.unobserve(entry.target);
+            }
+        });
+    }, {threshold: .1});
+
+    cards.forEach(card => observer.observe(card));
+} else {
+    cards.forEach(card => card.classList.add("visible"));
+}
+
+/* GPS LOCATION */
+
+function getLocation() {
+    if(!navigator.geolocation) {
+        toast("GPS is not supported by this browser.");
+        return;
+    }
+
+    el("gpsMessage").textContent = "Detecting location...";
+
+    navigator.geolocation.getCurrentPosition(position => {
+        el("latitude").value = position.coords.latitude.toFixed(7);
+        el("longitude").value = position.coords.longitude.toFixed(7);
+        el("gpsMessage").textContent = "Location captured successfully.";
+        toast("GPS location captured!");
+    }, error => {
+        el("gpsMessage").textContent =
+            "Unable to get GPS location. Enter coordinates manually or leave blank.";
+    }, {enableHighAccuracy: true, timeout: 15000});
+}
+
+/* REPORT COMPLAINT */
+
+el("reportForm").addEventListener("submit", async function(e) {
+    e.preventDefault();
+
+    const file = el("photo").files[0];
+
+    if(file && (
+        !["image/jpeg", "image/png", "image/webp"].includes(file.type)
+        || file.size > 1024 * 1024
+    )) {
+        toast("Choose a JPG, PNG or WebP image under 1 MB.");
+        return;
+    }
+
+    el("reportSubmit").disabled = true;
+
+    try {
+        let image = null;
+
+        if(file) {
+            image = await new Promise((resolve, reject) => {
+                const reader = new FileReader();
+                reader.onload = () => resolve(reader.result);
+                reader.onerror = reject;
+                reader.readAsDataURL(file);
+            });
+        }
+
+        const db = getDB();
+
+        // Residents table
+        let resident = db.Residents.find(r => r.phone === val("phone"));
+
+        if(!resident) {
+            resident = {
+                resident_id: createID("RES"),
+                name: val("residentName"),
+                phone: val("phone"),
+                email: val("email")
+            };
+
+            db.Residents.push(resident);
+        }
+
+        // Areas table
+        let area = db.Areas.find(a =>
+            a.area_name.toLowerCase() === val("area").toLowerCase()
+            && a.city.toLowerCase() === val("city").toLowerCase()
+            && a.pincode === val("pincode")
+        );
+
+        if(!area) {
+            area = {
+                area_id: createID("AREA"),
+                area_name: val("area"),
+                city: val("city"),
+                pincode: val("pincode")
+            };
+
+            db.Areas.push(area);
+        }
+
+        // Complaints table
+        const complaint = {
+            complaint_id: createID("WTR"),
+            area_id: area.area_id,
+            complaint_type: val("complaintType"),
+            description: val("description"),
+            location_details: val("locationDetails"),
+            latitude: val("latitude") || null,
+            longitude: val("longitude") || null,
+            image_path: image,
+            priority: val("priority"),
+            complaint_date: now(),
+            status: "Pending"
+        };
+
+        db.Complaints.push(complaint);
+
+        // Complaint Reports table
+        db.Complaint_Reports.push({
+            report_id: createID("REP"),
+            complaint_id: complaint.complaint_id,
+            resident_id: resident.resident_id,
+            report_date: now(),
+            description: complaint.description,
+            image_path: image
+        });
+
+        // Complaint Status History table
+        db.Complaint_Status_History.push({
+            history_id: createID("HIS"),
+            complaint_id: complaint.complaint_id,
+            old_status: null,
+            new_status: "Pending",
+            updated_by: "Resident",
+            remarks: "Complaint submitted successfully.",
+            updated_at: now()
+        });
+
+        if(!saveDB(db)) return;
+
+        el("generatedID").textContent = complaint.complaint_id;
+        el("trackID").value = complaint.complaint_id;
+        el("trackPhone").value = resident.phone;
+
+        el("reportForm").hidden = true;
+        el("reportSuccess").hidden = false;
+
+        toast("Complaint submitted successfully!");
+
+    } catch(error) {
+        toast("Unable to submit complaint.");
+    } finally {
+        el("reportSubmit").disabled = false;
+    }
+});
+
+function resetReport() {
+    el("reportForm").reset();
+    el("reportSuccess").hidden = true;
+    el("reportForm").hidden = false;
+}
+
+async function copyID() {
+    try {
+        await navigator.clipboard.writeText(el("generatedID").textContent);
+        toast("Complaint ID copied!");
+    } catch(error) {
+        toast("Please copy the complaint ID manually.");
+    }
+}
+
+/* STATUS BADGES */
+
+function statusBadge(status) {
+    const statuses = ["Pending", "Assigned", "In Progress", "Resolved"];
+    const value = statuses.includes(status) ? status : "Pending";
+
+    return `<span class="status ${value.replaceAll(" ", "-")}">${safe(value)}</span>`;
+}
+
+/* STATUS HISTORY */
+
+function timelineHTML(history) {
+    if(!history.length) return "<p>No history available.</p>";
+
+    return `<div class="timeline">
+        ${history.map(h => `
+            <div class="timeline-item">
+                <strong>${safe(h.new_status)}</strong>
+                <p>${safe(h.remarks || "Status updated.")}</p>
+                <small>${safe(h.updated_by)} · ${safe(h.updated_at)}</small>
+            </div>
+        `).join("")}
+    </div>`;
+}
+
+/* TRACK COMPLAINT */
+
+el("trackForm").addEventListener("submit", function(e) {
+    e.preventDefault();
+
+    const db = getDB();
+    const id = val("trackID").toUpperCase();
+    const resident = db.Residents.find(r => r.phone === val("trackPhone"));
+
+    const report = resident && db.Complaint_Reports.find(r =>
+        r.complaint_id === id && r.resident_id === resident.resident_id
+    );
+
+    const complaint = report && db.Complaints.find(c => c.complaint_id === id);
+
+    const result = el("trackResult");
+    result.hidden = false;
+
+    if(!complaint) {
+        result.innerHTML = "<p style='color:red;margin-top:20px'>Complaint not found. Check your ID and mobile number.</p>";
+        return;
+    }
+
+    const area = db.Areas.find(a => a.area_id === complaint.area_id);
+
+    const assignment = db.Assignments.filter(a =>
+        a.complaint_id === complaint.complaint_id
+    ).at(-1);
+
+    const team = assignment && db.Maintenance_Teams.find(t =>
+        t.team_id === assignment.team_id
+    );
+
+    const history = db.Complaint_Status_History.filter(h =>
+        h.complaint_id === complaint.complaint_id
+    );
+
+    result.innerHTML = `
+        <div class="panel details">
+            <h2>Complaint Information</h2>
+            <p><b>ID:</b> ${safe(complaint.complaint_id)}</p>
+            <p><b>Problem:</b> ${safe(complaint.complaint_type)}</p>
+            <p><b>Area:</b> ${safe(area?.area_name)}, ${safe(area?.city)}</p>
+            <p><b>Status:</b> ${statusBadge(complaint.status)}</p>
+            <p><b>Maintenance Team:</b> ${safe(team?.team_name || "Not assigned")}</p>
+            <p><b>Submitted:</b> ${safe(complaint.complaint_date)}</p>
+
+            <br>
+            <h2>Complaint Timeline</h2>
+            ${timelineHTML(history)}
+        </div>
+    `;
+});
+
+/* ADMIN LOGIN */
+
+function togglePassword(checkbox) {
+    el("adminPassword").type = checkbox.checked ? "text" : "password";
+}
+
+el("loginForm").addEventListener("submit", function(e) {
+    e.preventDefault();
+
+    if(val("adminEmail") === "admin@aquacare.com"
+       && val("adminPassword") === "admin123") {
+
+        sessionStorage.setItem("aquacareAdmin", "yes");
+
+        el("loginError").textContent = "";
+        this.reset();
+
+        location.hash = "admin";
+
+        adminTab("overview");
+        toast("Welcome, Administrator!");
+
+    } else {
+        el("loginError").textContent = "Invalid email or password.";
+    }
+});
+
+/* ADMIN TABS */
+
+function adminTab(id) {
+    if(!requireAdmin()) return;
+
+    document.querySelectorAll(".admin-tab").forEach(tab => {
+        tab.classList.toggle("active", tab.id === id);
+    });
+
+    document.querySelectorAll(".sidebar button").forEach(button => {
+        button.classList.toggle("selected", button.dataset.tab === id);
+    });
+
+    renderAdmin();
+}
+
+/* DASHBOARD STATISTICS */
+
+function animateNumber(id, target) {
+    const node = el(id);
+
+    if(node.animationFrame) {
+        cancelAnimationFrame(node.animationFrame);
+    }
+
+    const start = Number(node.textContent) || 0;
+    const started = performance.now();
+
+    function frame(time) {
+        const progress = Math.min((time - started) / 500, 1);
+        node.textContent = Math.round(start + (target - start) * progress);
+
+        if(progress < 1) {
+            node.animationFrame = requestAnimationFrame(frame);
+        }
+    }
+
+    node.animationFrame = requestAnimationFrame(frame);
+}
+
+function renderAdmin() {
+    if(!isAdmin()) return;
+
+    const db = getDB();
+    const complaints = db.Complaints;
+
+    const counts = [
+        complaints.length,
+        complaints.filter(c => c.status === "Pending").length,
+        complaints.filter(c => c.status === "Assigned").length,
+        complaints.filter(c => c.status === "In Progress").length,
+        complaints.filter(c => c.status === "Resolved").length
+    ];
+
+    ["total", "pending", "assigned", "progress", "resolved"]
+        .forEach((id, index) => animateNumber(id, counts[index]));
+
+    el("statusChart").innerHTML =
+        ["Pending", "Assigned", "In Progress", "Resolved"].map((status, i) => {
+            const percent = complaints.length
+                ? counts[i + 1] / complaints.length * 100
+                : 0;
+
+            return `
+                <p style="margin:15px 0 6px">${status}: ${counts[i + 1]}</p>
+                <div style="height:14px;background:#e0f2fe;border-radius:20px;overflow:hidden">
+                    <div style="width:${percent}%;height:100%;background:linear-gradient(90deg,#06b6d4,#0284c7);border-radius:20px"></div>
+                </div>
+            `;
+        }).join("");
+
+    /* Complaint table */
+    const search = val("search").toLowerCase();
+    const filter = val("statusFilter");
+
+    const filtered = complaints.filter(c => {
+        const area = db.Areas.find(a => a.area_id === c.area_id);
+
+        const matches = [
+            c.complaint_id, c.complaint_type, area?.area_name,
+            c.location_details
+        ].some(x => String(x || "").toLowerCase().includes(search));
+
+        return matches && (!filter || c.status === filter);
+    });
+
+    el("complaintRows").innerHTML = filtered.map(c => {
+        const area = db.Areas.find(a => a.area_id === c.area_id);
+
+        return `
+            <tr>
+                <td>${safe(c.complaint_id)}</td>
+                <td>${safe(c.complaint_type)}</td>
+                <td>${safe(area?.area_name)}</td>
+                <td>${safe(c.priority)}</td>
+                <td>${statusBadge(c.status)}</td>
+                <td><button class="small-btn" data-complaint="${safe(c.complaint_id)}">View</button></td>
+            </tr>
+        `;
+    }).join("") || "<tr><td colspan='6'>No complaints found.</td></tr>";
+
+    /* Residents table */
+    el("residentRows").innerHTML = db.Residents.map(r => `
+        <tr>
+            <td>${safe(r.resident_id)}</td>
+            <td>${safe(r.name)}</td>
+            <td>${safe(r.phone)}</td>
+            <td>${safe(r.email || "-")}</td>
+        </tr>
+    `).join("") || "<tr><td colspan='4'>No residents found.</td></tr>";
+
+    /* Areas table */
+    el("areaRows").innerHTML = db.Areas.map(a => `
+        <tr>
+            <td>${safe(a.area_id)}</td>
+            <td>${safe(a.area_name)}</td>
+            <td>${safe(a.city)}</td>
+            <td>${safe(a.pincode)}</td>
+        </tr>
+    `).join("") || "<tr><td colspan='4'>No areas found.</td></tr>";
+
+    /* Teams table */
+    el("teamRows").innerHTML = db.Maintenance_Teams.map(t => `
+        <tr>
+            <td>${safe(t.team_id)}</td>
+            <td>${safe(t.team_name)}</td>
+            <td>${safe(t.team_leader)}</td>
+            <td>${safe(t.phone)}</td>
+            <td>${safe(t.availability)}</td>
+            <td><button class="small-btn" data-team="${safe(t.team_id)}">Toggle Availability</button></td>
+        </tr>
+    `).join("");
+
+    /* Assignments table */
+    el("assignmentRows").innerHTML = db.Assignments.map(a => {
+        const team = db.Maintenance_Teams.find(t => t.team_id === a.team_id);
+
+        return `
+            <tr>
+                <td>${safe(a.assignment_id)}</td>
+                <td>${safe(a.complaint_id)}</td>
+                <td>${safe(team?.team_name)}</td>
+                <td>${safe(a.admin_id)}</td>
+                <td>${safe(a.assigned_date)}</td>
+            </tr>
+        `;
+    }).join("") || "<tr><td colspan='5'>No assignments found.</td></tr>";
+
+    /* Reports table */
+    el("reportRows").innerHTML = db.Complaint_Reports.map(r => {
+        const resident = db.Residents.find(x => x.resident_id === r.resident_id);
+
+        return `
+            <tr>
+                <td>${safe(r.report_id)}</td>
+                <td>${safe(r.complaint_id)}</td>
+                <td>${safe(resident?.name)}</td>
+                <td>${safe(r.report_date)}</td>
+                <td>${safe(r.description)}</td>
+            </tr>
+        `;
+    }).join("") || "<tr><td colspan='5'>No reports found.</td></tr>";
+
+    /* Status history */
+    el("historyContent").innerHTML =
+        db.Complaint_Status_History.map(h => `
+            <div class="timeline-item">
+                <strong>${safe(h.complaint_id)}</strong>
+                <p>${safe(h.old_status || "New")} → ${safe(h.new_status)}</p>
+                <p>${safe(h.remarks)}</p>
+                <small>${safe(h.updated_at)}</small>
+            </div>
+        `).join("") || "<p>No status history available.</p>";
+
+    el("messageContent").innerHTML = db.Contact_Messages.map(m => `
+        <div class="timeline-item">
+            <b>${safe(m.name)}</b>
+            <p>${safe(m.email)}</p>
+            <p>${safe(m.message)}</p>
+        </div>
+    `).join("") || "<p>No messages.</p>";
+}
+
+/* VIEW COMPLAINT */
+
+let selectedComplaint = null;
+
+el("complaintRows").addEventListener("click", e => {
+    const button = e.target.closest("[data-complaint]");
+
+    if(button) openComplaint(button.dataset.complaint);
+});
+
+function openComplaint(id) {
+    if(!requireAdmin()) return;
+
+    const db = getDB();
+
+    const c = db.Complaints.find(x => x.complaint_id === id);
+    if(!c) return;
+
+    selectedComplaint = id;
+
+    const area = db.Areas.find(a => a.area_id === c.area_id);
+    const report = db.Complaint_Reports.find(r => r.complaint_id === id);
+    const resident = db.Residents.find(r => r.resident_id === report?.resident_id);
+
+    el("detailContent").innerHTML = `
+        <p><b>ID:</b> ${safe(c.complaint_id)}</p>
+        <p><b>Resident:</b> ${safe(resident?.name)}</p>
+        <p><b>Phone:</b> ${safe(resident?.phone)}</p>
+        <p><b>Problem:</b> ${safe(c.complaint_type)}</p>
+        <p><b>Area:</b> ${safe(area?.area_name)}, ${safe(area?.city)}</p>
+        <p><b>Location:</b> ${safe(c.location_details)}</p>
+        <p><b>GPS:</b> ${safe(c.latitude || "-")}, ${safe(c.longitude || "-")}</p>
+        <p><b>Description:</b> ${safe(c.description)}</p>
+        <p><b>Priority:</b> ${safe(c.priority)}</p>
+        <p><b>Status:</b> ${statusBadge(c.status)}</p>
+    `;
+
+    if(c.image_path && /^data:image\/(jpeg|png|webp);base64,/.test(c.image_path)) {
+        const image = document.createElement("img");
+        image.src = c.image_path;
+        image.alt = "Complaint photograph";
+        el("detailContent").appendChild(image);
+    }
+
+    el("assignTeam").innerHTML =
+        '<option value="">Select maintenance team</option>' +
+        db.Maintenance_Teams.filter(t => t.availability === "Available").map(t =>
+            `<option value="${safe(t.team_id)}">${safe(t.team_name)}</option>`
+        ).join("");
+
+    el("updateStatus").value = c.status;
+    el("remarks").value = "";
+
+    el("complaintDetails").hidden = false;
+    el("complaintDetails").scrollIntoView({behavior: "smooth"});
+}
+
+/* ADD MAINTENANCE TEAM */
+
+el("teamForm").addEventListener("submit", function(e) {
+    e.preventDefault();
+
+    if(!requireAdmin()) return;
+
+    const db = getDB();
+
+    db.Maintenance_Teams.push({
+        team_id: createID("TEAM"),
+        team_name: val("teamName"),
+        team_leader: val("teamLeader"),
+        phone: val("teamPhone"),
+        availability: val("availability")
+    });
+
+    if(!saveDB(db)) return;
+
+    this.reset();
+    renderAdmin();
+
+    toast("Maintenance team added!");
+});
+
+el("teamRows").addEventListener("click", e => {
+    const button = e.target.closest("[data-team]");
+
+    if(!button || !requireAdmin()) return;
+
+    const db = getDB();
+    const team = db.Maintenance_Teams.find(t => t.team_id === button.dataset.team);
+
+    if(!team) return;
+
+    team.availability = team.availability === "Available"
+        ? "Unavailable" : "Available";
+
+    if(saveDB(db)) {
+        renderAdmin();
+        toast("Team availability updated.");
+    }
+});
+
+/* ASSIGN COMPLAINT */
+
+function assignComplaint() {
+    if(!requireAdmin()) return;
+
+    const teamID = val("assignTeam");
+
+    if(!teamID) {
+        toast("Please select a maintenance team.");
+        return;
+    }
+
+    const db = getDB();
+
+    const c = db.Complaints.find(x => x.complaint_id === selectedComplaint);
+    const team = db.Maintenance_Teams.find(t => t.team_id === teamID);
+
+    if(!c || !team || team.availability !== "Available") {
+        toast("Selected team is unavailable.");
+        return;
+    }
+
+    if(c.status === "Resolved") {
+        toast("This complaint has already been resolved.");
+        return;
+    }
+
+    db.Assignments.push({
+        assignment_id: createID("ASG"),
+        complaint_id: c.complaint_id,
+        team_id: teamID,
+        admin_id: "ADMIN-01",
+        assigned_date: now()
+    });
+
+    db.Complaint_Status_History.push({
+        history_id: createID("HIS"),
+        complaint_id: c.complaint_id,
+        old_status: c.status,
+        new_status: "Assigned",
+        updated_by: "Admin",
+        remarks: "Assigned to " + team.team_name,
+        updated_at: now()
+    });
+
+    c.status = "Assigned";
+
+    if(!saveDB(db)) return;
+
+    renderAdmin();
+    openComplaint(c.complaint_id);
+
+    toast("Maintenance team assigned successfully!");
+}
+
+/* UPDATE COMPLAINT STATUS */
+
+function updateComplaint() {
+    if(!requireAdmin()) return;
+
+    const db = getDB();
+    const c = db.Complaints.find(x => x.complaint_id === selectedComplaint);
+
+    if(!c) return;
+
+    const newStatus = val("updateStatus");
+    const remarks = val("remarks");
+
+    const allowed = ["Pending", "Assigned", "In Progress", "Resolved"];
+
+    if(!allowed.includes(newStatus)) return;
+
+    const hasAssignment = db.Assignments.some(a =>
+        a.complaint_id === c.complaint_id
+    );
+
+    if(newStatus !== "Pending" && !hasAssignment) {
+        toast("Assign a maintenance team first.");
+        return;
+    }
+
+    db.Complaint_Status_History.push({
+        history_id: createID("HIS"),
+        complaint_id: c.complaint_id,
+        old_status: c.status,
+        new_status: newStatus,
+        updated_by: "Admin",
+        remarks: remarks || "Complaint status updated.",
+        updated_at: now()
+    });
+
+    c.status = newStatus;
+
+    if(!saveDB(db)) return;
+
+    renderAdmin();
+    el("complaintDetails").hidden = true;
+
+    toast("Complaint status and response saved!");
+}
+
+/* CONTACT MESSAGES */
+
+if (el("contactForm")) {
+    el("contactForm").addEventListener("submit", function(e) {
+        e.preventDefault();
+
+        const db = getDB();
+
+        db.Contact_Messages.push({
+            name: val("contactName"),
+            email: val("contactEmail"),
+            message: val("contactMessage"),
+            date: now()
+        });
+
+        if(!saveDB(db)) return;
+
+        this.reset();
+
+        toast("Message saved successfully in the demo!");
+    });
+}
+
+/* ADMIN LOGOUT */
+
+function logout() {
+    sessionStorage.removeItem("aquacareAdmin");
+
+    el("logoutModal").hidden = true;
+    el("complaintDetails").hidden = true;
+
+    selectedComplaint = null;
+    location.hash = "home";
+
+    toast("Logged out successfully.");
+}
+
+/* INITIALIZE */
+
+window.addEventListener("storage", e => {
+    if(e.key === DB_KEY && isAdmin()) renderAdmin();
+});
+
+navigate();
